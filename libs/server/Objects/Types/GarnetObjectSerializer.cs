@@ -37,7 +37,7 @@ namespace Garnet.server
             Debug.Assert(data != null);
 
             using var ms = new MemoryStream(data);
-            using var binaryReader = new BinaryReader(ms, new UTF8Encoding());
+            using var binaryReader = new BinaryReader(ms, Encoding.UTF8);
             return DeserializeInternal(binaryReader);
         }
 
@@ -68,17 +68,17 @@ namespace Garnet.server
         /// <summary>Thread safe version of Serialize.</summary>
         /// <param name="obj"></param>
         /// <returns></returns>
-        public byte[] Serialize(IGarnetObject obj)
+        public static byte[] Serialize(IGarnetObject obj)
         {
             Debug.Assert(obj != null);
 
             using var ms = new MemoryStream();
-            using var binaryWriter = new BinaryWriter(ms, new UTF8Encoding());
+            using var binaryWriter = new BinaryWriter(ms, Encoding.UTF8);
             SerializeInternal(binaryWriter, obj);
             return ms.ToArray();
         }
 
-        private void SerializeInternal(BinaryWriter binaryWriter, IGarnetObject obj)
+        private static void SerializeInternal(BinaryWriter binaryWriter, IGarnetObject obj)
         {
             if (obj == null)
                 binaryWriter.Write((byte)GarnetObjectType.Null);

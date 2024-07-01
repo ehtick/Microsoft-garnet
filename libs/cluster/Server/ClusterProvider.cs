@@ -112,7 +112,7 @@ namespace Garnet.cluster
 
         /// <inheritdoc />
         public bool IsReplica()
-            => clusterManager?.CurrentConfig.GetLocalNodeRole() == NodeRole.REPLICA || replicationManager?.recovering == true;
+            => clusterManager?.CurrentConfig.LocalNodeRole == NodeRole.REPLICA || replicationManager?.Recovering == true;
 
         /// <inheritdoc />
         public void ResetGossipStats()
@@ -156,7 +156,7 @@ namespace Garnet.cluster
             // Used to delete old checkpoints and cleanup and also cleanup during attachment to new primary
             replicationManager.AddCheckpointEntry(entry, storeType, full);
 
-            if (clusterManager.CurrentConfig.GetLocalNodeRole() == NodeRole.PRIMARY)
+            if (clusterManager.CurrentConfig.LocalNodeRole == NodeRole.PRIMARY)
                 _ = replicationManager.SafeTruncateAof(CheckpointCoveredAofAddress);
             else
             {
@@ -174,7 +174,7 @@ namespace Garnet.cluster
         public void OnCheckpointInitiated(out long CheckpointCoveredAofAddress)
         {
             Debug.Assert(serverOptions.EnableCluster);
-            if (serverOptions.EnableAOF && clusterManager.CurrentConfig.GetLocalNodeRole() == NodeRole.REPLICA)
+            if (serverOptions.EnableAOF && clusterManager.CurrentConfig.LocalNodeRole == NodeRole.REPLICA)
                 CheckpointCoveredAofAddress = replicationManager.ReplicationOffset;
             else
                 CheckpointCoveredAofAddress = storeWrapper.appendOnlyFile.TailAddress;
@@ -188,7 +188,7 @@ namespace Garnet.cluster
             var clusterEnabled = serverOptions.EnableCluster;
             var config = clusterEnabled ? clusterManager.CurrentConfig : null;
             var replicaInfo = clusterEnabled ? replicationManager.GetReplicaInfo() : null;
-            var role = clusterEnabled ? config.GetLocalNodeRole() : NodeRole.PRIMARY;
+            var role = clusterEnabled ? config.LocalNodeRole : NodeRole.PRIMARY;
             var replication_offset = !clusterEnabled ? "N/A" : replicationManager.ReplicationOffset.ToString();
             var replication_offset2 = !clusterEnabled ? "N/A" : replicationManager.ReplicationOffset2.ToString();
 
@@ -218,7 +218,7 @@ namespace Garnet.cluster
                     replicationInfo.Add(new("master_port", port.ToString()));
                     replicationInfo.Add(primaryLinkStatus[0]);
                     replicationInfo.Add(primaryLinkStatus[1]);
-                    replicationInfo.Add(new("master_sync_in_progress", replicationManager.recovering.ToString()));
+                    replicationInfo.Add(new("master_sync_in_progress", replicationManager.Recovering.ToString()));
                     replicationInfo.Add(new("slave_read_repl_offset", replication_offset));
                     replicationInfo.Add(new("slave_priority", "100"));
                     replicationInfo.Add(new("slave_read_only", "1"));
@@ -274,20 +274,22 @@ namespace Garnet.cluster
         /// Wait for config transition
         /// </summary>
         /// <returns></returns>
-        internal bool WaitForConfigTransition()
+        internal bool BumpAndWaitForEpochTransition()
         {
             var server = storeWrapper.GetServer();
             BumpCurrentEpoch();
             while (true)
             {
             retry:
-                var currentEpoch = GarnetCurrentEpoch;
                 Thread.Yield();
+                // Acquire latest bumped epoch
+                var currentEpoch = GarnetCurrentEpoch;
                 var sessions = server.ActiveClusterSessions();
                 foreach (var s in sessions)
                 {
                     var entryEpoch = s.LocalCurrentEpoch;
-                    if (entryEpoch != 0 && entryEpoch >= currentEpoch)
+                    // Retry if at least one session has not yet caught up to the current epoch.
+                    if (entryEpoch != 0 && entryEpoch < currentEpoch)
                         goto retry;
                 }
                 break;

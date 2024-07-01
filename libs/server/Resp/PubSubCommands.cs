@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Text;
 using Garnet.common;
 using Tsavorite.core;
 
@@ -22,46 +21,67 @@ namespace Garnet.server
         /// <inheritdoc />
         public override unsafe void Publish(ref byte* keyPtr, int keyLength, ref byte* valPtr, int valLength, ref byte* inputPtr, int sid)
         {
-            networkSender.GetResponseObject();
+            networkSender.EnterAndGetResponseObject(out dcurr, out dend);
+            try
+            {
+                if (respProtocolVersion == 2)
+                {
+                    while (!RespWriteUtils.WriteArrayLength(3, ref dcurr, dend))
+                        SendAndReset();
+                }
+                else
+                {
+                    while (!RespWriteUtils.WritePushLength(3, ref dcurr, dend))
+                        SendAndReset();
+                }
+                while (!RespWriteUtils.WriteBulkString("message"u8, ref dcurr, dend))
+                    SendAndReset();
+                while (!RespWriteUtils.WriteBulkString(new Span<byte>(keyPtr + sizeof(int), keyLength - sizeof(int)), ref dcurr, dend))
+                    SendAndReset();
+                while (!RespWriteUtils.WriteBulkString(new Span<byte>(valPtr + sizeof(int), valLength - sizeof(int)), ref dcurr, dend))
+                    SendAndReset();
 
-            byte* d = networkSender.GetResponseObjectHead();
-            var dend = networkSender.GetResponseObjectTail();
-            var dcurr = d; // reserve space for size
-
-            while (!RespWriteUtils.WriteArrayLength(3, ref dcurr, dend))
-                SendAndReset();
-
-            while (!RespWriteUtils.WriteBulkString("message"u8, ref dcurr, dend))
-                SendAndReset();
-            while (!RespWriteUtils.WriteBulkString(new Span<byte>(keyPtr + sizeof(int), keyLength - sizeof(int)), ref dcurr, dend))
-                SendAndReset();
-            while (!RespWriteUtils.WriteBulkString(new Span<byte>(valPtr + sizeof(int), valLength - sizeof(int)), ref dcurr, dend))
-                SendAndReset();
-
-            networkSender.SendResponse((int)(d - networkSender.GetResponseObjectHead()), (int)(dcurr - d));
+                if (dcurr > networkSender.GetResponseObjectHead())
+                    Send(networkSender.GetResponseObjectHead());
+            }
+            finally
+            {
+                networkSender.ExitAndReturnResponseObject();
+            }
         }
 
         /// <inheritdoc />
         public override unsafe void PrefixPublish(byte* patternPtr, int patternLength, ref byte* keyPtr, int keyLength, ref byte* valPtr, int valLength, ref byte* inputPtr, int sid)
         {
-            networkSender.GetResponseObject();
+            networkSender.EnterAndGetResponseObject(out dcurr, out dend);
+            try
+            {
+                if (respProtocolVersion == 2)
+                {
+                    while (!RespWriteUtils.WriteArrayLength(4, ref dcurr, dend))
+                        SendAndReset();
+                }
+                else
+                {
+                    while (!RespWriteUtils.WritePushLength(4, ref dcurr, dend))
+                        SendAndReset();
+                }
+                while (!RespWriteUtils.WriteBulkString("pmessage"u8, ref dcurr, dend))
+                    SendAndReset();
+                while (!RespWriteUtils.WriteBulkString(new Span<byte>(patternPtr + sizeof(int), patternLength - sizeof(int)), ref dcurr, dend))
+                    SendAndReset();
+                while (!RespWriteUtils.WriteBulkString(new Span<byte>(keyPtr + sizeof(int), keyLength - sizeof(int)), ref dcurr, dend))
+                    SendAndReset();
+                while (!RespWriteUtils.WriteBulkString(new Span<byte>(valPtr + sizeof(int), valLength - sizeof(int)), ref dcurr, dend))
+                    SendAndReset();
 
-            byte* d = networkSender.GetResponseObjectHead();
-            var dend = networkSender.GetResponseObjectTail();
-            var dcurr = d; // reserve space for size
-
-            RespWriteUtils.WriteArrayLength(4, ref dcurr, dend);
-
-            while (!RespWriteUtils.WriteBulkString("pmessage"u8, ref dcurr, dend))
-                SendAndReset();
-            while (!RespWriteUtils.WriteBulkString(new Span<byte>(patternPtr + sizeof(int), patternLength - sizeof(int)), ref dcurr, dend))
-                SendAndReset();
-            while (!RespWriteUtils.WriteBulkString(new Span<byte>(keyPtr + sizeof(int), keyLength - sizeof(int)), ref dcurr, dend))
-                SendAndReset();
-            while (!RespWriteUtils.WriteBulkString(new Span<byte>(valPtr + sizeof(int), valLength - sizeof(int)), ref dcurr, dend))
-                SendAndReset();
-
-            networkSender.SendResponse((int)(d - networkSender.GetResponseObjectHead()), (int)(dcurr - d));
+                if (dcurr > networkSender.GetResponseObjectHead())
+                    Send(networkSender.GetResponseObjectHead());
+            }
+            finally
+            {
+                networkSender.ExitAndReturnResponseObject();
+            }
         }
 
         /// <summary>
@@ -151,7 +171,6 @@ namespace Garnet.server
         private bool NetworkPSUBSCRIBE(int count, byte* ptr, byte* dend)
         {
             // PSUBSCRIBE channel1 channel2.. ==> [$10\r\nPSUBSCRIBE\r\n$]8\r\nchannel1\r\n$8\r\nchannel2\r\n => PSubscribe to channel1 and channel2
-            Debug.Assert(subscribeBroker != null);
 
             bool disabledBroker = subscribeBroker == null;
             for (int c = 0; c < count; c++)
@@ -198,7 +217,6 @@ namespace Garnet.server
         private bool NetworkUNSUBSCRIBE(int count, byte* ptr, byte* dend)
         {
             // UNSUBSCRIBE channel1 channel2.. ==> [$11\r\nUNSUBSCRIBE\r\n]$8\r\nchannel1\r\n$8\r\nchannel2\r\n => Subscribe to channel1 and channel2
-            Debug.Assert(subscribeBroker != null);
 
             if (count == 0)
             {
@@ -289,7 +307,6 @@ namespace Garnet.server
         private bool NetworkPUNSUBSCRIBE(int count, byte* ptr, byte* dend)
         {
             // PUNSUBSCRIBE channel1 channel2.. ==> [$11\r\nPUNSUBSCRIBE\r\n]$8\r\nchannel1\r\n$8\r\nchannel2\r\n => Subscribe to channel1 and channel2
-            Debug.Assert(subscribeBroker != null);
 
             if (count == 0)
             {

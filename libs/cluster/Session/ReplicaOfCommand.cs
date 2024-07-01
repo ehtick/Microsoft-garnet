@@ -1,6 +1,8 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+using System;
+using System.Text;
 using Garnet.common;
 using Garnet.server;
 using Microsoft.Extensions.Logging;
@@ -19,12 +21,27 @@ namespace Garnet.cluster
 
             readHead = (int)(ptr - recvBufferPtr);
 
-            // Turn of replication and make replica into a primary but do not delete data
-            if (address.ToUpper().Equals("NO") && portStr.ToUpper().Equals("ONE"))
+            //Turn of replication and make replica into a primary but do not delete data
+            if (address.Equals("NO", StringComparison.OrdinalIgnoreCase) &&
+                portStr.Equals("ONE", StringComparison.OrdinalIgnoreCase))
             {
-                clusterProvider.clusterManager?.TryResetReplica();
-                clusterProvider.replicationManager.TryUpdateForFailover();
-                UnsafeWaitForConfigTransition();
+                try
+                {
+                    if (!clusterProvider.replicationManager.StartRecovery())
+                    {
+                        logger?.LogError($"{nameof(TryREPLICAOF)}: {{logMessage}}", Encoding.ASCII.GetString(CmdStrings.RESP_ERR_GENERIC_CANNOT_ACQUIRE_RECOVERY_LOCK));
+                        while (!RespWriteUtils.WriteError(CmdStrings.RESP_ERR_GENERIC_CANNOT_ACQUIRE_RECOVERY_LOCK, ref dcurr, dend))
+                            SendAndReset();
+                        return true;
+                    }
+                    clusterProvider.clusterManager.TryResetReplica();
+                    clusterProvider.replicationManager.TryUpdateForFailover();
+                    UnsafeBumpAndWaitForEpochTransition();
+                }
+                finally
+                {
+                    clusterProvider.replicationManager.SuspendRecovery();
+                }
             }
             else
             {

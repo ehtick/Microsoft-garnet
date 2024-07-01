@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using Garnet.server;
@@ -14,18 +15,28 @@ namespace Garnet.test
     public class RespAofTests
     {
         GarnetServer server;
-        static readonly SortedSetEntry[] entries = new SortedSetEntry[]
-        {
-            new SortedSetEntry("a", 1), new SortedSetEntry("b", 2), new SortedSetEntry("c", 3),
-            new SortedSetEntry("d", 4), new SortedSetEntry("e", 5), new SortedSetEntry("f", 6),
-            new SortedSetEntry("g", 7), new SortedSetEntry("h", 8), new SortedSetEntry("i", 9),
+        private IReadOnlyDictionary<string, RespCommandsInfo> respCustomCommandsInfo;
+
+        static readonly SortedSetEntry[] entries =
+        [
+            new SortedSetEntry("a", 1),
+            new SortedSetEntry("b", 2),
+            new SortedSetEntry("c", 3),
+            new SortedSetEntry("d", 4),
+            new SortedSetEntry("e", 5),
+            new SortedSetEntry("f", 6),
+            new SortedSetEntry("g", 7),
+            new SortedSetEntry("h", 8),
+            new SortedSetEntry("i", 9),
             new SortedSetEntry("j", 10)
-        };
+        ];
 
         [SetUp]
         public void Setup()
         {
             TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
+            Assert.IsTrue(TestUtils.TryGetCustomCommandsInfo(out respCustomCommandsInfo));
+            Assert.IsNotNull(respCustomCommandsInfo);
             server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, enableAOF: true, lowMemory: true);
             server.Start();
         }
@@ -334,7 +345,7 @@ namespace Garnet.test
                 var db = redis.GetDatabase(0);
                 for (int i = 0; i < 100; i++)
                 {
-                    SortedSetEntry[] entry = new SortedSetEntry[] { new SortedSetEntry("a", 1), new SortedSetEntry("b", 2) };
+                    SortedSetEntry[] entry = [new SortedSetEntry("a", 1), new SortedSetEntry("b", 2)];
                     db.SortedSetAdd(key + i, entry);
 
                     var score = db.SortedSetScore(key + i, "a");
@@ -342,7 +353,7 @@ namespace Garnet.test
                     Assert.AreEqual(1, score.Value);
 
                 }
-                SortedSetEntry[] newEntries = new SortedSetEntry[] { new SortedSetEntry("bbbb", 4) };
+                SortedSetEntry[] newEntries = [new SortedSetEntry("bbbb", 4)];
                 db.SortedSetAdd("AofRMWObjectStoreRecoverTestKey" + 1, newEntries);
             }
             server.Store.CommitAOF(true);
@@ -408,8 +419,8 @@ namespace Garnet.test
             void RegisterCustomCommand(GarnetServer gServer)
             {
                 var factory = new MyDictFactory();
-                gServer.Register.NewCommand("MYDICTSET", 2, CommandType.ReadModifyWrite, factory);
-                gServer.Register.NewCommand("MYDICTGET", 1, CommandType.Read, factory);
+                gServer.Register.NewCommand("MYDICTSET", 2, CommandType.ReadModifyWrite, factory, respCustomCommandsInfo["MYDICTSET"]);
+                gServer.Register.NewCommand("MYDICTGET", 1, CommandType.Read, factory, respCustomCommandsInfo["MYDICTGET"]);
             }
 
             server.Dispose(false);

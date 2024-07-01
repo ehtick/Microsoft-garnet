@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Tsavorite.core;
@@ -59,7 +60,7 @@ namespace Garnet.server
         /// <summary>
         /// Get slice as SpanByte
         /// </summary>
-        public readonly SpanByte SpanByte => SpanByte.FromPinnedPointer(ptr, length);
+        public readonly SpanByte SpanByte => new(length, (nint)ptr);
 
         /// <summary>
         /// Copies the contents of this slice into a new array.
@@ -72,5 +73,23 @@ namespace Garnet.server
         /// <returns>A string ASCII decoded string from the slice.</returns>
         public override readonly string ToString()
             => Encoding.ASCII.GetString(ReadOnlySpan);
+
+        /// <summary>
+        /// Create a <see cref="ArgSlice"/> from the given <paramref name="span"/>.
+        /// </summary>
+        /// <remarks>
+        /// SAFETY: The <paramref name="span"/> MUST point to pinned memory.
+        /// </remarks>
+        internal static ArgSlice FromPinnedSpan(ReadOnlySpan<byte> span)
+        {
+            return new ArgSlice((byte*)Unsafe.AsPointer(ref MemoryMarshal.GetReference(span)), span.Length);
+        }
+
+        /// <summary>
+        /// Check for equality to the provided argSlice
+        /// </summary>
+        /// <param name="argSlice"></param>
+        /// <returns></returns>
+        public readonly bool Equals(ArgSlice argSlice) => argSlice.Span.SequenceEqual(Span);
     }
 }

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using Garnet.common;
 
@@ -11,7 +12,7 @@ namespace Garnet.server
 {
     class GarnetInfoMetrics
     {
-        public static readonly InfoMetricsType[] defaultInfo = Enum.GetValues(typeof(InfoMetricsType)).Cast<InfoMetricsType>()
+        public static readonly InfoMetricsType[] defaultInfo = Enum.GetValues<InfoMetricsType>()
             .Where(e => e switch
             {
                 InfoMetricsType.STOREHASHTABLE => false,
@@ -45,17 +46,17 @@ namespace Garnet.server
             serverInfo =
             [
                 new("garnet_version", storeWrapper.version),
-                new("garnet_mode", storeWrapper.serverOptions.EnableCluster ? "cluster" : "standalone"),
                 new("os", Environment.OSVersion.ToString()),
                 new("processor_count", Environment.ProcessorCount.ToString()),
                 new("arch_bits", Environment.Is64BitProcess ? "64" : "32"),
-                new("uptime_in_seconds", uptime.Seconds.ToString()),
-                new("uptime_in_days", uptime.Days.ToString()),
+                new("uptime_in_seconds", ((int)uptime.TotalSeconds).ToString()),
+                new("uptime_in_days", ((int)uptime.TotalDays).ToString()),
                 new("monitor_task", storeWrapper.serverOptions.MetricsSamplingFrequency > 0 ? "enabled" : "disabled"),
                 new("monitor_freq", storeWrapper.serverOptions.MetricsSamplingFrequency.ToString()),
                 new("latency_monitor", storeWrapper.serverOptions.LatencyMonitor ? "enabled" : "disabled"),
                 new("run_id", storeWrapper.run_id),
-                new("redis_version", storeWrapper.redisProtocolVersion)
+                new("redis_version", storeWrapper.redisProtocolVersion),
+                new("redis_mode", storeWrapper.serverOptions.EnableCluster ? "cluster" : "standalone"),
             ];
         }
 
@@ -164,7 +165,7 @@ namespace Garnet.server
                     new("total_pending", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_pending().ToString()),
                     new("total_found", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_found().ToString()),
                     new("total_notfound", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_notfound().ToString()),
-                    new("garnet_hit_rate", garnet_hit_rate.ToString("N2")),
+                    new("garnet_hit_rate", garnet_hit_rate.ToString("N2", CultureInfo.InvariantCulture)),
                     new("total_cluster_commands_processed", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_cluster_commands_processed().ToString()),
                     new("total_write_commands_processed", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_write_commands_processed().ToString()),
                     new("total_read_commands_processed", metricsDisabled ? "0" : globalMetrics.globalSessionMetrics.get_total_read_commands_processed().ToString()),
@@ -249,7 +250,7 @@ namespace Garnet.server
         {
             var metricsDisabled = storeWrapper.monitor == null;
             var globalMetrics = metricsDisabled ? default : storeWrapper.monitor.GlobalMetrics;
-            clientsInfo = [new("connected_clients", metricsDisabled ? "0" : globalMetrics.total_connections_received.ToString())];
+            clientsInfo = [new("connected_clients", metricsDisabled ? "0" : (globalMetrics.total_connections_received - globalMetrics.total_connections_disposed).ToString())];
         }
 
         private void PopulateKeyspaceInfo(StoreWrapper storeWrapper)
@@ -275,15 +276,16 @@ namespace Garnet.server
                 InfoMetricsType.PERSISTENCE => "Persistence",
                 InfoMetricsType.CLIENTS => "Clients",
                 InfoMetricsType.KEYSPACE => "Keyspace",
+                InfoMetricsType.MODULES => "Modules",
                 _ => "Default",
             };
         }
 
-        private string GetSectionRespInfo(InfoMetricsType infoType, MetricsItem[] info)
+        private static string GetSectionRespInfo(InfoMetricsType infoType, MetricsItem[] info)
         {
-            if (info == null)
-                return "";
             var section = $"# {GetSectionHeader(infoType)}\r\n";
+            if (info == null)
+                return section;
 
             // For some metrics we have a multi-string in the value and no name, so don't print a stray leading ':'.
             if (string.IsNullOrEmpty(info[0].Name))
@@ -349,6 +351,8 @@ namespace Garnet.server
                 case InfoMetricsType.KEYSPACE:
                     PopulateKeyspaceInfo(storeWrapper);
                     return GetSectionRespInfo(InfoMetricsType.KEYSPACE, keyspaceInfo);
+                case InfoMetricsType.MODULES:
+                    return GetSectionRespInfo(section, null);
                 default:
                     return "";
             }
@@ -416,6 +420,8 @@ namespace Garnet.server
                 case InfoMetricsType.KEYSPACE:
                     PopulateKeyspaceInfo(storeWrapper);
                     return keyspaceInfo;
+                case InfoMetricsType.MODULES:
+                    return null;
                 default:
                     return null;
             }

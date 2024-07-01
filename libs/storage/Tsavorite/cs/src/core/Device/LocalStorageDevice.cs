@@ -54,11 +54,10 @@ namespace Tsavorite.core
         /// <param name="preallocateFile"></param>
         /// <param name="deleteOnClose"></param>
         /// <param name="disableFileBuffering">Whether file buffering (during write) is disabled (default of true requires aligned writes)</param>
-        /// <param name="capacity">The maximum number of bytes this storage device can accommondate, or CAPACITY_UNSPECIFIED if there is no such limit </param>
+        /// <param name="capacity">The maximum number of bytes this storage device can accommodate, or CAPACITY_UNSPECIFIED if there is no such limit </param>
         /// <param name="recoverDevice">Whether to recover device metadata from existing files</param>
         /// <param name="useIoCompletionPort">Whether we use IO completion port with polling</param>
         public LocalStorageDevice(string filename,
-
                                   bool preallocateFile = false,
                                   bool deleteOnClose = false,
                                   bool disableFileBuffering = true,
@@ -86,7 +85,7 @@ namespace Tsavorite.core
         /// <param name="preallocateFile"></param>
         /// <param name="deleteOnClose"></param>
         /// <param name="disableFileBuffering"></param>
-        /// <param name="capacity">The maximum number of bytes this storage device can accommondate, or CAPACITY_UNSPECIFIED if there is no such limit </param>
+        /// <param name="capacity">The maximum number of bytes this storage device can accommodate, or CAPACITY_UNSPECIFIED if there is no such limit </param>
         /// <param name="recoverDevice">Whether to recover device metadata from existing files</param>
         /// <param name="initialLogFileHandles">Optional set of preloaded safe file handles, which can speed up hydration of preexisting log file handles</param>
         /// <param name="useIoCompletionPort">Whether we use IO completion port with polling</param>
@@ -118,7 +117,7 @@ namespace Tsavorite.core
                 ioCompletionPort = Native32.CreateIoCompletionPort(new SafeFileHandle(new IntPtr(-1), false), IntPtr.Zero, UIntPtr.Zero, (uint)(workerThreads + NumCompletionThreads));
                 for (int i = 0; i < NumCompletionThreads; i++)
                 {
-                    var thread = new Thread(() => new LocalStorageDeviceCompletionWorker().Start(ioCompletionPort, _callback))
+                    var thread = new Thread(() => LocalStorageDeviceCompletionWorker.Start(ioCompletionPort, _callback))
                     {
                         IsBackground = true
                     };
@@ -553,7 +552,7 @@ namespace Tsavorite.core
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     sealed unsafe class LocalStorageDeviceCompletionWorker
     {
-        public void Start(IntPtr ioCompletionPort, IOCompletionCallback _callback)
+        public static void Start(IntPtr ioCompletionPort, IOCompletionCallback _callback)
         {
             while (true)
             {

@@ -27,8 +27,8 @@ namespace Garnet
         private TsavoriteKV<byte[], IGarnetObject> objectStore;
         private IDevice aofDevice;
         private TsavoriteLog appendOnlyFile;
-        private SubscribeKVBroker<SpanByte, SpanByte, SpanByte, IKeyInputSerializer<SpanByte, SpanByte>> kvBroker;
         private SubscribeBroker<SpanByte, SpanByte, IKeySerializer<SpanByte>> broker;
+        private CollectionItemBroker itemBroker;
         private LogSettings logSettings, objLogSettings;
         private INamedDeviceFactory logFactory;
         private MemoryLogger initLogger;
@@ -43,12 +43,12 @@ namespace Garnet
         protected StoreWrapper storeWrapper;
 
         // IMPORTANT: Keep the version in sync with .azure\pipelines\azure-pipelines-external-release.yml line ~6.
-        readonly string version = "1.0.5";
+        readonly string version = "1.0.15";
 
         /// <summary>
         /// Resp protocol version
         /// </summary>
-        readonly string redisProtocolVersion = "6.2.11";
+        readonly string redisProtocolVersion = "7.2.5";
 
         /// <summary>
         /// Metrics API
@@ -235,11 +235,12 @@ namespace Garnet
                         revivificationSettings: objRevivSettings, logger: this.loggerFactory?.CreateLogger("TsavoriteKV  [obj]"));
                 if (objTotalMemorySize > 0)
                     objectStoreSizeTracker = new CacheSizeTracker(objectStore, objLogSettings, objTotalMemorySize, this.loggerFactory);
+
+                itemBroker = new CollectionItemBroker();
             }
 
             if (!opts.DisablePubSub)
             {
-                kvBroker = new SubscribeKVBroker<SpanByte, SpanByte, SpanByte, IKeyInputSerializer<SpanByte, SpanByte>>(new SpanByteKeySerializer(), null, opts.PubSubPageSizeBytes(), true);
                 broker = new SubscribeBroker<SpanByte, SpanByte, IKeySerializer<SpanByte>>(new SpanByteKeySerializer(), null, opts.PubSubPageSizeBytes(), true);
             }
 
@@ -281,7 +282,7 @@ namespace Garnet
             storeWrapper = new StoreWrapper(version, redisProtocolVersion, server, store, objectStore, objectStoreSizeTracker, customCommandManager, appendOnlyFile, opts, clusterFactory: clusterFactory, loggerFactory: loggerFactory);
 
             // Create session provider for Garnet
-            Provider = new GarnetProvider(storeWrapper, kvBroker, broker);
+            Provider = new GarnetProvider(storeWrapper, broker, itemBroker);
 
             // Create user facing API endpoints
             Metrics = new MetricsApi(Provider);
@@ -335,7 +336,6 @@ namespace Garnet
             Provider?.Dispose();
             server.Dispose();
             broker?.Dispose();
-            kvBroker?.Dispose();
             store.Dispose();
             appendOnlyFile?.Dispose();
             aofDevice?.Dispose();

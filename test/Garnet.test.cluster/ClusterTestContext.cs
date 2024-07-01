@@ -9,6 +9,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Garnet.server.Auth.Settings;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 using StackExchange.Redis;
@@ -97,17 +98,19 @@ namespace Garnet.test.cluster
             int CommitFrequencyMs = 0,
             bool DisableStorageTier = false,
             bool EnableIncrementalSnapshots = false,
-            bool FastCommit = false,
+            bool FastCommit = true,
             int timeout = -1,
             bool useTLS = false,
             bool useAcl = false,
             X509CertificateCollection certificates = null,
-            ServerCredential clusterCreds = new ServerCredential())
+            ServerCredential clusterCreds = new ServerCredential(),
+            AadAuthenticationSettings authenticationSettings = null,
+            bool disablePubSub = true)
         {
             endpoints = TestUtils.GetEndPoints(shards, 7000);
             nodes = TestUtils.CreateGarnetCluster(
                 TestFolder,
-                disablePubSub: true,
+                disablePubSub: disablePubSub,
                 disableObjects: disableObjects,
                 endpoints: endpoints,
                 enableAOF: enableAOF,
@@ -131,7 +134,8 @@ namespace Garnet.test.cluster
                 aclFile: credManager.aclFilePath,
                 authUsername: clusterCreds.user,
                 authPassword: clusterCreds.password,
-                certificates: certificates);
+                certificates: certificates,
+                authenticationSettings: authenticationSettings);
 
             foreach (var node in nodes)
                 node.Start();
@@ -179,7 +183,7 @@ namespace Garnet.test.cluster
             int CommitFrequencyMs = 0,
             bool DisableStorageTier = false,
             bool EnableIncrementalSnapshots = false,
-            bool FastCommit = false,
+            bool FastCommit = true,
             int timeout = -1,
             int gossipDelay = 5,
             bool useTLS = false,
@@ -412,7 +416,7 @@ namespace Garnet.test.cluster
                 }
 
                 var retVal = clusterTestUtils.GetKey(replicaIndex, keyBytes, out var _, out var _, out var _, out var responseState, logger: logger);
-                while (retVal == null || (value != int.Parse(retVal)))
+                while (responseState != ResponseState.OK || retVal == null || (value != int.Parse(retVal)))
                 {
                     retVal = clusterTestUtils.GetKey(replicaIndex, keyBytes, out var _, out var _, out var _, out responseState, logger: logger);
                     ClusterTestUtils.BackOff();
@@ -461,7 +465,7 @@ namespace Garnet.test.cluster
                 clusterTestUtils.WaitForReplicaAofSync(primaryIndex, replicaIndex);
 
                 var retVal = clusterTestUtils.GetKey(replicaIndex, keyBytes, out int _, out string _, out int _, out ResponseState responseState, logger: logger);
-                while (retVal == null || (value != int.Parse(retVal)))
+                while (responseState != ResponseState.OK || retVal == null || (value != int.Parse(retVal)))
                 {
                     retVal = clusterTestUtils.GetKey(replicaIndex, keyBytes, out int _, out string _, out int _, out responseState, logger: logger);
                     ClusterTestUtils.BackOff();

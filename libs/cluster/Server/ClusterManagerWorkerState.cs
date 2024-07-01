@@ -24,8 +24,6 @@ namespace Garnet.cluster
             string address,
             int port,
             long configEpoch,
-            long currentConfigEpoch,
-            long lastVotedConfigEpoch,
             NodeRole role,
             string replicaOfNodeId,
             string hostname)
@@ -33,7 +31,7 @@ namespace Garnet.cluster
             while (true)
             {
                 var current = currentConfig;
-                var newConfig = current.InitializeLocalWorker(nodeId, address, port, configEpoch, currentConfigEpoch, lastVotedConfigEpoch, role, replicaOfNodeId, hostname);
+                var newConfig = current.InitializeLocalWorker(nodeId, address, port, configEpoch, role, replicaOfNodeId, hostname);
                 if (Interlocked.CompareExchange(ref currentConfig, newConfig, current) == current)
                     break;
             }
@@ -57,7 +55,7 @@ namespace Garnet.cluster
                 {
                     var current = currentConfig;
 
-                    if (current.GetLocalNodeId().Equals(nodeid))
+                    if (current.LocalNodeId.Equals(nodeid, StringComparison.OrdinalIgnoreCase))
                     {
                         errorMessage = CmdStrings.RESP_ERR_GENERIC_CANNOT_FORGET_MYSELF;
                         return false;
@@ -69,7 +67,7 @@ namespace Garnet.cluster
                         return false;
                     }
 
-                    if (current.GetLocalNodeRole() == NodeRole.REPLICA && current.GetLocalNodePrimaryId().Equals(nodeid))
+                    if (current.LocalNodeRole == NodeRole.REPLICA && current.LocalNodePrimaryId.Equals(nodeid, StringComparison.OrdinalIgnoreCase))
                     {
                         errorMessage = CmdStrings.RESP_ERR_GENERIC_CANNOT_FORGET_MY_PRIMARY;
                         return false;
@@ -106,14 +104,11 @@ namespace Garnet.cluster
                 while (true)
                 {
                     var current = currentConfig;
-                    var newNodeId = soft ? current.GetLocalNodeId() : Generator.CreateHexId();
-                    var address = current.GetLocalNodeIp();
-                    var port = current.GetLocalNodePort();
+                    var newNodeId = soft ? current.LocalNodeId : Generator.CreateHexId();
+                    var address = current.LocalNodeIp;
+                    var port = current.LocalNodePort;
 
-                    var configEpoch = soft ? current.GetLocalNodeConfigEpoch() : 0;
-                    var currentConfigEpoch = soft ? current.GetLocalNodeCurrentConfigEpoch() : 0;
-                    var lastVotedConfigEpoch = soft ? current.GetLocalNodeLastVotedEpoch() : 0;
-
+                    var configEpoch = soft ? current.LocalNodeConfigEpoch : 0;
                     var expiry = DateTimeOffset.UtcNow.Ticks + TimeSpan.FromSeconds(expirySeconds).Ticks;
                     foreach (var nodeId in current.GetRemoteNodeIds())
                         _ = workerBanList.AddOrUpdate(nodeId, expiry, (key, oldValue) => expiry);
@@ -123,8 +118,6 @@ namespace Garnet.cluster
                         address,
                         port,
                         configEpoch: configEpoch,
-                        currentConfigEpoch: currentConfigEpoch,
-                        lastVotedConfigEpoch: lastVotedConfigEpoch,
                         role: NodeRole.PRIMARY,
                         replicaOfNodeId: null,
                         Format.GetHostName());
@@ -145,33 +138,32 @@ namespace Garnet.cluster
         /// </summary>
         /// <param name="nodeid"></param>
         /// <param name="force">Check if node is clean (i.e. is PRIMARY without any assigned nodes)</param>
-        /// <param name="recovering"></param>
         /// <param name="errorMessage">The ASCII encoded error response if the method returned <see langword="false"/>; otherwise <see langword="default"/></param>
         /// <param name="logger"></param>
-        public bool TryAddReplica(string nodeid, bool force, ref bool recovering, out ReadOnlySpan<byte> errorMessage, ILogger logger = null)
+        public bool TryAddReplica(string nodeid, bool force, out ReadOnlySpan<byte> errorMessage, ILogger logger = null)
         {
             errorMessage = default;
             while (true)
             {
                 var current = CurrentConfig;
-                if (current.GetLocalNodeId().Equals(nodeid))
+                if (current.LocalNodeId.Equals(nodeid, StringComparison.OrdinalIgnoreCase))
                 {
                     errorMessage = CmdStrings.RESP_ERR_GENERIC_CANNOT_REPLICATE_SELF;
-                    logger?.LogError(Encoding.ASCII.GetString(errorMessage));
+                    logger?.LogError($"{nameof(TryAddReplica)}: {{logMessage}}", Encoding.ASCII.GetString(errorMessage));
                     return false;
                 }
 
-                if (!force && current.GetLocalNodeRole() != NodeRole.PRIMARY)
+                if (!force && current.LocalNodeRole != NodeRole.PRIMARY)
                 {
-                    logger?.LogError("ERR I am already replica of {localNodePrimaryId}", current.GetLocalNodePrimaryId());
-                    errorMessage = Encoding.ASCII.GetBytes($"ERR I am already replica of {current.GetLocalNodePrimaryId()}.");
+                    logger?.LogError("ERR I am already replica of {localNodePrimaryId}", current.LocalNodePrimaryId);
+                    errorMessage = Encoding.ASCII.GetBytes($"ERR I am already replica of {current.LocalNodePrimaryId}.");
                     return false;
                 }
 
                 if (!force && current.HasAssignedSlots(1))
                 {
                     errorMessage = CmdStrings.RESP_ERR_GENERIC_CANNOT_MAKE_REPLICA_WITH_ASSIGNED_SLOTS;
-                    logger?.LogError(Encoding.ASCII.GetString(errorMessage));
+                    logger?.LogError($"{nameof(TryAddReplica)}: {{logMessage}}", Encoding.ASCII.GetString(errorMessage));
                     return false;
                 }
 
@@ -190,9 +182,16 @@ namespace Garnet.cluster
                     return false;
                 }
 
-                recovering = true;
-                var newConfig = currentConfig.MakeReplicaOf(nodeid);
-                newConfig = newConfig.BumpLocalNodeConfigEpoch();
+                // Transition to recovering state
+                // Only one caller will succeed in becoming a replica for the provided node-id
+                if (!clusterProvider.replicationManager.StartRecovery())
+                {
+                    logger?.LogError($"{nameof(TryAddReplica)}: {{logMessage}}", Encoding.ASCII.GetString(CmdStrings.RESP_ERR_GENERIC_CANNOT_ACQUIRE_RECOVERY_LOCK));
+                    errorMessage = CmdStrings.RESP_ERR_GENERIC_CANNOT_ACQUIRE_RECOVERY_LOCK;
+                    return false;
+                }
+
+                var newConfig = currentConfig.MakeReplicaOf(nodeid).BumpLocalNodeConfigEpoch();
                 if (Interlocked.CompareExchange(ref currentConfig, newConfig, current) == current)
                     break;
             }

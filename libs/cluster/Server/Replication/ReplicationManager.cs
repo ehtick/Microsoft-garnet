@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Garnet.common;
 using Garnet.server;
 using Microsoft.Extensions.Logging;
 using Tsavorite.core;
@@ -26,11 +27,13 @@ namespace Garnet.cluster
 
         private long primary_sync_last_time;
 
-        internal long LastPrimarySyncSeconds => recovering ? (DateTime.UtcNow.Ticks - primary_sync_last_time) / TimeSpan.TicksPerSecond : 0;
+        internal long LastPrimarySyncSeconds => Recovering ? (DateTime.UtcNow.Ticks - primary_sync_last_time) / TimeSpan.TicksPerSecond : 0;
 
         internal void UpdateLastPrimarySyncTime() => this.primary_sync_last_time = DateTime.UtcNow.Ticks;
 
-        public bool recovering;
+        private SingleWriterMultiReaderLock recoverLock;
+        public bool Recovering => recoverLock.IsWriteLocked;
+
         private long replicationOffset;
         public long ReplicationOffset
         {
@@ -38,7 +41,7 @@ namespace Garnet.cluster
             {
                 // Primary tracks replicationOffset indirectly through AOF tailAddress
                 // Replica will adjust replication offset as it receives data from primary (TODO: since AOFs are synced this might obsolete)
-                var role = clusterProvider.clusterManager.CurrentConfig.GetLocalNodeRole();
+                var role = clusterProvider.clusterManager.CurrentConfig.LocalNodeRole;
                 return role == NodeRole.PRIMARY ?
                     (clusterProvider.serverOptions.EnableAOF && storeWrapper.appendOnlyFile.TailAddress > kFirstValidAofAddress ? storeWrapper.appendOnlyFile.TailAddress : kFirstValidAofAddress) :
                     replicationOffset;
@@ -72,14 +75,14 @@ namespace Garnet.cluster
         public long GetRecoveredSafeAofAddress()
         {
             var storeAofAddress = clusterProvider.replicationManager.GetCkptManager(StoreType.Main).RecoveredSafeAofAddress;
-            var objectStoreAofAddress = clusterProvider.serverOptions.DisableObjects ? clusterProvider.replicationManager.GetCkptManager(StoreType.Main).RecoveredSafeAofAddress : long.MaxValue;
+            var objectStoreAofAddress = clusterProvider.serverOptions.DisableObjects ? long.MaxValue : clusterProvider.replicationManager.GetCkptManager(StoreType.Object).RecoveredSafeAofAddress;
             return Math.Min(storeAofAddress, objectStoreAofAddress);
         }
 
         public long GetCurrentSafeAofAddress()
         {
             var storeAofAddress = clusterProvider.replicationManager.GetCkptManager(StoreType.Main).CurrentSafeAofAddress;
-            var objectStoreAofAddress = clusterProvider.serverOptions.DisableObjects ? clusterProvider.replicationManager.GetCkptManager(StoreType.Main).CurrentSafeAofAddress : long.MaxValue;
+            var objectStoreAofAddress = clusterProvider.serverOptions.DisableObjects ? long.MaxValue : clusterProvider.replicationManager.GetCkptManager(StoreType.Object).CurrentSafeAofAddress;
             return Math.Min(storeAofAddress, objectStoreAofAddress);
         }
 
@@ -98,9 +101,9 @@ namespace Garnet.cluster
             if (storeWrapper.objectStore != null)
                 clusterProvider.GetReplicationLogCheckpointManager(StoreType.Object).checkpointVersionShift = CheckpointVersionShift;
 
-            // If starts as replica, it cannot serve until it is connected to primary
-            if (clusterProvider.clusterManager.CurrentConfig.GetLocalNodeRole() == NodeRole.REPLICA)
-                recovering = true;
+            // If this node starts as replica, it cannot serve requests until it is connected to primary
+            if (clusterProvider.clusterManager.CurrentConfig.LocalNodeRole == NodeRole.REPLICA && !StartRecovery())
+                throw new Exception(Encoding.ASCII.GetString(CmdStrings.RESP_ERR_GENERIC_CANNOT_ACQUIRE_RECOVERY_LOCK));
 
             this.logger = logger;
 
@@ -129,14 +132,36 @@ namespace Garnet.cluster
 
         void CheckpointVersionShift(bool isMainStore, long oldVersion, long newVersion)
         {
-            if (clusterProvider.clusterManager.CurrentConfig.GetLocalNodeRole() == NodeRole.REPLICA)
+            if (clusterProvider.clusterManager.CurrentConfig.LocalNodeRole == NodeRole.REPLICA)
                 return;
             storeWrapper.EnqueueCommit(isMainStore, newVersion);
         }
 
-        public void Reset()
+        /// <summary>
+        /// Acquire recovery and checkpoint locks to prevent checkpoints and parallel recovery tasks
+        /// </summary>
+        public bool StartRecovery()
         {
-            recovering = false;
+            if (!clusterProvider.storeWrapper.TryPauseCheckpoints())
+                return false;
+
+            if (!recoverLock.TryWriteLock())
+            {
+                // If failed to acquire recoverLock re-enable checkpoint taking
+                clusterProvider.storeWrapper.ResumeCheckpoints();
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Release recovery and checkpoint locks
+        /// </summary>
+        public void SuspendRecovery()
+        {
+            recoverLock.WriteUnlock();
+            clusterProvider.storeWrapper.ResumeCheckpoints();
         }
 
         public void Dispose()
@@ -165,7 +190,7 @@ namespace Garnet.cluster
         /// </summary>
         public void Recover()
         {
-            var nodeRole = clusterProvider.clusterManager.CurrentConfig.GetLocalNodeRole();
+            var nodeRole = clusterProvider.clusterManager.CurrentConfig.LocalNodeRole;
 
             switch (nodeRole)
             {
@@ -228,12 +253,11 @@ namespace Garnet.cluster
 
             var current = clusterProvider.clusterManager.CurrentConfig;
 
-            var localNodeRole = current.GetLocalNodeRole();
-            var replicaOfNodeId = current.GetLocalNodePrimaryId();
+            var localNodeRole = current.LocalNodeRole;
+            var replicaOfNodeId = current.LocalNodePrimaryId;
             if (localNodeRole == NodeRole.REPLICA && replicaOfNodeId != null)
             {
-                clusterProvider.replicationManager.recovering = true;
-                clusterProvider.WaitForConfigTransition();
+                // At initialization of ReplicationManager, this node has been put into recovery mode
                 if (!TryReplicateFromPrimary(out var errorMessage))
                     logger?.LogError($"An error occurred at {nameof(ReplicationManager)}.{nameof(Start)} {{error}}", Encoding.ASCII.GetString(errorMessage));
             }
@@ -246,7 +270,7 @@ namespace Garnet.cluster
                     if (clusterProvider.replicationManager.TryAddReplicationTask(replicaId, 0, out var aofSyncTaskInfo))
                     {
                         if (!TryConnectToReplica(replicaId, 0, aofSyncTaskInfo, out var errorMessage))
-                            logger?.LogError(Encoding.ASCII.GetString(errorMessage));
+                            logger?.LogError($"{{errorMessage}}", Encoding.ASCII.GetString(errorMessage));
                     }
                 }
             }

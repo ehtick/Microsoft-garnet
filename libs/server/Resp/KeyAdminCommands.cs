@@ -4,7 +4,6 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Text;
 using Garnet.common;
 using Tsavorite.core;
 
@@ -29,7 +28,7 @@ namespace Garnet.server
                 return false;
             readHead = (int)(ptr - recvBufferPtr);
 
-            if (NetworkSingleKeySlotVerify(key1Ptr, ksize1, false) || NetworkSingleKeySlotVerify(key2Ptr, ksize2, false))
+            if (NetworkMultiKeySlotVerify(readOnly: false))
                 return true;
 
             ArgSlice oldKeySlice = new(key1Ptr, ksize1);
@@ -64,7 +63,7 @@ namespace Garnet.server
                 return false;
             readHead = (int)(ptr - recvBufferPtr);
 
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, false))
+            if (NetworkMultiKeySlotVerify(readOnly: false))
                 return true;
 
             var key = new Span<byte>(keyPtr, ksize);
@@ -105,7 +104,7 @@ namespace Garnet.server
                 return false;
             readHead = (int)(ptr - recvBufferPtr);
 
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, false))
+            if (NetworkMultiKeySlotVerify(readOnly: false))
                 return true;
 
             keyPtr -= sizeof(int);
@@ -144,8 +143,8 @@ namespace Garnet.server
         {
             int exists = 0;
 
-            if (NetworkArraySlotVerify(count, ptr, interleavedKeys: false, readOnly: true, out bool retVal))
-                return retVal;
+            if (NetworkMultiKeySlotVerify(readOnly: true))
+                return true;
 
             for (int i = 0; i < count; i++)
             {
@@ -168,54 +167,16 @@ namespace Garnet.server
             return true;
         }
 
-
-        /// <summary>
-        /// Exists RESP command
-        /// </summary>
-        /// <typeparam name="TGarnetApi"></typeparam>
-        /// <param name="ptr">Reading pointer to network buffer</param>
-        /// <param name="storageApi">Garnet API instance</param>
-        /// <returns></returns>
-        private bool NetworkEXISTS<TGarnetApi>(byte* ptr, ref TGarnetApi storageApi)
-            where TGarnetApi : IGarnetApi
-        {
-            byte* keyPtr = null;
-            int ksize = 0;
-
-            if (!RespReadUtils.ReadPtrWithLengthHeader(ref keyPtr, ref ksize, ref ptr, recvBufferPtr + bytesRead))
-                return false;
-            readHead = (int)(ptr - recvBufferPtr);
-
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, true))
-                return true;
-
-            ArgSlice key = new(keyPtr, ksize);
-            var status = storageApi.EXISTS(key);
-
-            if (status == GarnetStatus.OK)
-            {
-                while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_RETURN_VAL_1, ref dcurr, dend))
-                    SendAndReset();
-            }
-            else
-            {
-                while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_RETURN_VAL_0, ref dcurr, dend))
-                    SendAndReset();
-            }
-            return true;
-        }
-
         /// <summary>
         /// Set a timeout on a key.
         /// </summary>
         /// <typeparam name="TGarnetApi"></typeparam>
-
         /// <param name="command">Indicates which command to use, expire or pexpire.</param>
         /// <param name="count">Number of arguments sent with this command.</param>
         /// <param name="ptr"></param>
         /// <param name="storageApi"></param>
         /// <returns></returns>
-        private bool NetworkEXPIRE<TGarnetApi>(RespCommand command, int count, byte* ptr, ref TGarnetApi storageApi)
+        private bool NetworkEXPIRE<TGarnetApi>(int count, byte* ptr, RespCommand command, ref TGarnetApi storageApi)
             where TGarnetApi : IGarnetApi
         {
             byte* keyPtr = null;
@@ -238,12 +199,7 @@ namespace Garnet.server
                 if (!RespReadUtils.ReadStringWithLengthHeader(out optionStr, ref ptr, recvBufferPtr + bytesRead))
                     return false;
 
-                optionStr = optionStr.ToUpper();
-                try
-                {
-                    expireOption = (ExpireOption)Enum.Parse(typeof(ExpireOption), optionStr);
-                }
-                catch
+                if (!Enum.TryParse(optionStr, ignoreCase: true, out expireOption))
                 {
                     invalidOption = true;
                 }
@@ -257,7 +213,7 @@ namespace Garnet.server
                 return true;
             }
 
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, false))
+            if (NetworkMultiKeySlotVerify(readOnly: false, firstKey: 0, lastKey: 0))
                 return true;
 
             var key = new ArgSlice(keyPtr, ksize);
@@ -296,7 +252,7 @@ namespace Garnet.server
                 return false;
             readHead = (int)(ptr - recvBufferPtr);
 
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, true))
+            if (NetworkMultiKeySlotVerify(readOnly: false))
                 return true;
 
             var key = new ArgSlice(keyPtr, ksize);
@@ -333,7 +289,7 @@ namespace Garnet.server
                 return false;
             readHead = (int)(ptr - recvBufferPtr);
 
-            if (NetworkSingleKeySlotVerify(keyPtr, ksize, true))
+            if (NetworkMultiKeySlotVerify(readOnly: true))
                 return true;
 
             keyPtr -= sizeof(int);
@@ -353,7 +309,7 @@ namespace Garnet.server
             }
             else
             {
-                while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_RETURN_VAL_N1, ref dcurr, dend))
+                while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_RETURN_VAL_N2, ref dcurr, dend))
                     SendAndReset();
             }
             return true;

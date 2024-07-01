@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Garnet.server;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using StackExchange.Redis;
 
@@ -50,21 +51,22 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 184;
             Assert.AreEqual(expectedResponse, actualValue);
 
             string popval = db.ListLeftPop(key);
             Assert.AreEqual(val, popval);
 
+            var keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
+
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
-            expectedResponse = 104;
-            Assert.AreEqual(expectedResponse, actualValue);
+            Assert.IsTrue(result.IsNull);
         }
 
         [Test]
-        public void MultiLPUSHAndLTRIM()
+        public void MultiLPUSHAndLTRIMWithMemoryCheck()
         {
             using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
             var db = redis.GetDatabase(0);
@@ -80,39 +82,86 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 904;
             Assert.AreEqual(expectedResponse, actualValue);
 
-            long nLen = db.ListLength(key);
             db.ListTrim(key, 1, 5);
 
-            long nLen1 = db.ListLength(key);
-            Assert.AreEqual(nLen1, 5);
+            var nLen = db.ListLength(key);
+            Assert.AreEqual(5, nLen);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 504;
             Assert.AreEqual(expectedResponse, actualValue);
 
             //all elements remain
             db.ListTrim(key, 0, -1);
-            nLen1 = db.ListLength(key);
-            Assert.AreEqual(nLen1, 5);
+            nLen = db.ListLength(key);
+            Assert.AreEqual(5, nLen);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 504;
             Assert.AreEqual(expectedResponse, actualValue);
 
             db.ListTrim(key, 0, -3);
-            nLen1 = db.ListLength(key);
-            Assert.AreEqual(3, nLen1);
+            nLen = db.ListLength(key);
+            Assert.AreEqual(3, nLen);
 
             var vals = db.ListRange(key, 0, -1);
             Assert.AreEqual("val_8", vals[0].ToString());
             Assert.AreEqual("val_7", vals[1].ToString());
             Assert.AreEqual("val_6", vals[2].ToString());
+
+            db.ListTrim(key, -4, -4);
+            var exists = db.KeyExists(key);
+            Assert.IsFalse(exists);
+        }
+
+        private static object[] LTrimTestCases = {
+            new object[] {0, 0, new[] {0} },
+            new object[] {-2, -1, new[] {8, 9} },
+            new object[] {-2, -2, new[] {8} },
+            new object[] {3, 5, new[] {3, 4, 5} },
+            new object[] {-12, 0, new[] {0} },
+            new object[] {-12, 2, new[] {0, 1, 2} },
+            new object[] {-12, -7, new[] {0, 1, 2, 3} },
+            new object[] {-15, -11, Array.Empty<int>() },
+            new object[] {8, 8, new[] {8} },
+            new object[] {8, 12, new[] {8, 9} },
+            new object[] {9, 12, new[] {9} },
+            new object[] {10, 12, Array.Empty<int>() },
+            new object[] {5, 3, Array.Empty<int>()},
+            new object[] {-3, -5, Array.Empty<int>()}
+        };
+
+        [Test]
+        [TestCaseSource(nameof(LTrimTestCases))]
+        public void MultiRPUSHAndLTRIM(int startIdx, int stopIdx, int[] expectedRemainingIdx)
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            var db = redis.GetDatabase(0);
+
+            var key = "List_Test";
+            var nVals = 10;
+            var values = new RedisValue[nVals];
+            for (var i = 0; i < 10; i++)
+            {
+                values[i] = "val_" + i;
+            }
+            var nAdded = db.ListRightPush(key, values);
+            Assert.AreEqual(nVals, nAdded);
+
+            db.ListTrim(key, startIdx, stopIdx);
+            var nLen = db.ListLength(key);
+            Assert.AreEqual(expectedRemainingIdx.Length, nLen);
+            var remainingVals = db.ListRange(key);
+            for (var i = 0; i < remainingVals.Length; i++)
+            {
+                Assert.AreEqual(values[expectedRemainingIdx[i]], remainingVals[i].ToString());
+            }
         }
 
         [Test]
@@ -243,7 +292,7 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 344;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -257,7 +306,7 @@ namespace Garnet.test
             Assert.AreEqual(val, insert_val);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 432;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -268,7 +317,7 @@ namespace Garnet.test
             Assert.AreEqual(val, insert_val);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 520;
             Assert.AreEqual(expectedResponse, actualValue);
         }
@@ -292,7 +341,7 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 584;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -301,7 +350,7 @@ namespace Garnet.test
             Assert.AreEqual(ret, 2);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 424;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -310,9 +359,18 @@ namespace Garnet.test
             Assert.AreEqual(nLen, 3);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 344;
             Assert.AreEqual(expectedResponse, actualValue);
+
+            ret = db.ListRemove(key, "val_2", 0);
+            Assert.AreEqual(2, ret);
+
+            ret = db.ListRemove(key, "val_4", 0);
+            Assert.AreEqual(1, ret);
+
+            var exists = db.KeyExists(key);
+            Assert.IsFalse(exists);
         }
 
         [Test]
@@ -333,7 +391,7 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 904;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -352,12 +410,13 @@ namespace Garnet.test
 
             // list is empty, the code should return (nil)
             popval = db.ListLeftPop(key);
-            Assert.AreEqual(null, popval);
+            Assert.IsNull(popval);
+
+            var keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
-            expectedResponse = 104;
-            Assert.AreEqual(expectedResponse, actualValue);
+            Assert.IsTrue(result.IsNull);
         }
 
         [Test]
@@ -378,7 +437,7 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 904;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -388,7 +447,7 @@ namespace Garnet.test
             Assert.AreEqual(nLen, 8);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             expectedResponse = 744;
             Assert.AreEqual(expectedResponse, actualValue);
         }
@@ -411,7 +470,7 @@ namespace Garnet.test
             Assert.AreEqual(nVals, nAdded);
 
             var result = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
+            var actualValue = ResultType.Integer == result.Resp2Type ? Int32.Parse(result.ToString()) : -1;
             var expectedResponse = 904;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -427,19 +486,27 @@ namespace Garnet.test
                     break;
             }
 
-            result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
-            expectedResponse = 104;
-            Assert.AreEqual(expectedResponse, actualValue);
-
             // list is empty, the code should return (nil)
             popval = db.ListLeftPop(key);
-            Assert.AreEqual(null, popval);
+            Assert.IsNull(popval);
+
+            var keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
 
             result = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == result.Type ? Int32.Parse(result.ToString()) : -1;
-            expectedResponse = 104;
-            Assert.AreEqual(expectedResponse, actualValue);
+            Assert.IsTrue(result.IsNull);
+
+            var pushed = db.ListRightPush(key, []);
+            Assert.AreEqual(0, pushed);
+
+            keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
+
+            pushed = db.ListLeftPush(key, []);
+            Assert.AreEqual(0, pushed);
+
+            keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
         }
 
         [Test]
@@ -468,34 +535,34 @@ namespace Garnet.test
             db.ListRightPush(key, "Value-three");
 
             var result = db.ListRightPopLeftPush("mylist", "myotherlist");
-            Assert.AreEqual(result, "Value-three");
+            Assert.AreEqual("Value-three", result.ToString());
 
             var response = db.Execute("MEMORY", "USAGE", key);
-            var actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            var actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             var expectedResponse = 272;
             Assert.AreEqual(expectedResponse, actualValue);
 
             var lrange = db.ListRange(key, 0, -1);
-            Assert.AreEqual(lrange.Count(), 2);
-            Assert.AreEqual(lrange[0], "Value-one");
-            Assert.AreEqual(lrange[1], "Value-two");
+            Assert.AreEqual(2, lrange.Length);
+            Assert.AreEqual("Value-one", lrange[0].ToString());
+            Assert.AreEqual("Value-two", lrange[1].ToString());
 
             lrange = db.ListRange("myotherlist", 0, -1);
-            Assert.AreEqual(lrange.Count(), 1);
-            Assert.AreEqual(lrange[0], "Value-three");
+            Assert.AreEqual(1, lrange.Length);
+            Assert.AreEqual("Value-three", lrange[0].ToString());
 
             result = db.ListRightPopLeftPush(key, key);
-            Assert.AreEqual(result, "Value-two");
+            Assert.AreEqual("Value-two", result.ToString());
 
             response = db.Execute("MEMORY", "USAGE", key);
-            actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             expectedResponse = 272;
             Assert.AreEqual(expectedResponse, actualValue);
 
             lrange = db.ListRange(key, 0, -1);
-            Assert.AreEqual(lrange.Count(), 2);
-            Assert.AreEqual(lrange[0], "Value-two");
-            Assert.AreEqual(lrange[1], "Value-one");
+            Assert.AreEqual(2, lrange.Length);
+            Assert.AreEqual("Value-two", lrange[0].ToString());
+            Assert.AreEqual("Value-one", lrange[1].ToString());
         }
 
         [Test]
@@ -593,6 +660,27 @@ namespace Garnet.test
             Assert.IsTrue(result[1].ToString().Equals("g"));
         }
 
+        [Test]
+        public void CanDoLSETbasic()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            var db = redis.GetDatabase(0);
+
+            var key = "mylist";
+            var values = new RedisValue[] { "one", "two", "three" };
+            var pushResult = db.ListRightPush(key, values);
+            Assert.AreEqual(3, pushResult);
+
+            db.ListSetByIndex(key, 0, "four");
+            db.ListSetByIndex(key, -2, "five");
+
+            var result = db.ListRange(key, 0, -1);
+            var strResult = result.Select(r => r.ToString()).ToArray();
+            Assert.AreEqual(3, result.Length);
+            var expected = new[] { "four", "five", "three" };
+            Assert.IsTrue(expected.SequenceEqual(strResult));
+        }
+
         #region GarnetClientTests
 
         [Test]
@@ -602,32 +690,32 @@ namespace Garnet.test
             db.Connect();
 
             //If source does not exist, the value nil is returned and no operation is performed.
-            var response = await db.ExecuteForStringResultAsync("RPOPLPUSH", new string[] { "mylist", "myotherlist" });
+            var response = await db.ExecuteForStringResultAsync("RPOPLPUSH", ["mylist", "myotherlist"]);
             Assert.AreEqual(null, response);
 
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "one" });
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "two" });
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "three" });
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "one"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "two"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "three"]);
 
-            response = await db.ExecuteForStringResultAsync("RPOPLPUSH", new string[] { "mylist", "myotherlist" });
+            response = await db.ExecuteForStringResultAsync("RPOPLPUSH", ["mylist", "myotherlist"]);
             Assert.AreEqual("three", response);
 
-            var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "mylist", "0", "-1" });
+            var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["mylist", "0", "-1"]);
             var expectedResponseArray = new string[] { "one", "two" };
             Assert.AreEqual(expectedResponseArray, responseArray);
 
-            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "myotherlist", "0", "-1" });
-            expectedResponseArray = new string[] { "three" };
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["myotherlist", "0", "-1"]);
+            expectedResponseArray = ["three"];
             Assert.AreEqual(expectedResponseArray, responseArray);
 
             // if source and destination are the same 
             //the operation is equivalent to removing the last element from the list and pushing it as first element of the list,
             //so it can be considered as a list rotation command.
-            response = await db.ExecuteForStringResultAsync("RPOPLPUSH", new string[] { "mylist", "mylist" });
+            response = await db.ExecuteForStringResultAsync("RPOPLPUSH", ["mylist", "mylist"]);
             Assert.AreEqual("two", response);
 
-            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "mylist", "0", "-1" });
-            expectedResponseArray = new string[] { "two", "one" };
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["mylist", "0", "-1"]);
+            expectedResponseArray = ["two", "one"];
             Assert.AreEqual(expectedResponseArray, responseArray);
         }
 
@@ -638,15 +726,67 @@ namespace Garnet.test
             using var db = TestUtils.GetGarnetClient();
             db.Connect();
 
+            // Test for Operation direction error.
+            var exception = Assert.ThrowsAsync<Exception>(async () =>
+            {
+                await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "right", "lef" });
+            });
+            Assert.AreEqual("ERR syntax error", exception.Message);
+
             //If source does not exist, the value nil is returned and no operation is performed.
-            var response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "RIGHT", "LEFT" });
+            var response = await db.ExecuteForStringResultAsync("LMOVE", ["mylist", "myotherlist", "RIGHT", "LEFT"]);
             Assert.AreEqual(null, response);
+
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "one"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "two"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "three"]);
+
+            response = await db.ExecuteForStringResultAsync("LMOVE", ["mylist", "myotherlist", "RIGHT", "LEFT"]);
+            Assert.AreEqual("three", response);
+
+            var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["mylist", "0", "-1"]);
+            var expectedResponseArray = new string[] { "one", "two" };
+            Assert.AreEqual(expectedResponseArray, responseArray);
+
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["myotherlist", "0", "-1"]);
+            expectedResponseArray = ["three"];
+            Assert.AreEqual(expectedResponseArray, responseArray);
+
+            response = await db.ExecuteForStringResultAsync("LMOVE", ["mylist", "myotherlist", "LEFT", "RIGHT"]);
+            Assert.AreEqual("one", response);
+
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["mylist", "0", "-1"]);
+            expectedResponseArray = ["two"];
+            Assert.AreEqual(expectedResponseArray, responseArray);
+
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["myotherlist", "0", "-1"]);
+            expectedResponseArray = ["three", "one"];
+            Assert.AreEqual(expectedResponseArray, responseArray);
+
+            // if source and destination are the same 
+            //the operation is equivalent to a list rotation command.
+            response = await db.ExecuteForStringResultAsync("LMOVE", ["mylist", "mylist", "LEFT", "RIGHT"]);
+            Assert.AreEqual("two", response);
+
+            response = await db.ExecuteForStringResultAsync("LMOVE", ["myotherlist", "myotherlist", "LEFT", "RIGHT"]);
+            Assert.AreEqual("three", response);
+
+            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["myotherlist", "0", "-1"]);
+            expectedResponseArray = ["one", "three"];
+            Assert.AreEqual(expectedResponseArray, responseArray);
+        }
+
+        [Test]
+        public async Task CanUseLMoveWithCaseInsensitiveDirectionGC()
+        {
+            using var db = TestUtils.GetGarnetClient();
+            db.Connect();
 
             await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "one" });
             await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "two" });
             await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "three" });
 
-            response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "RIGHT", "LEFT" });
+            var response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "right", "left" });
             Assert.AreEqual("three", response);
 
             var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "mylist", "0", "-1" });
@@ -657,7 +797,7 @@ namespace Garnet.test
             expectedResponseArray = new string[] { "three" };
             Assert.AreEqual(expectedResponseArray, responseArray);
 
-            response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "LEFT", "RIGHT" });
+            response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "myotherlist", "LeFT", "RIghT" });
             Assert.AreEqual("one", response);
 
             responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "mylist", "0", "-1" });
@@ -667,18 +807,6 @@ namespace Garnet.test
             responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "myotherlist", "0", "-1" });
             expectedResponseArray = new string[] { "three", "one" };
             Assert.AreEqual(expectedResponseArray, responseArray);
-
-            // if source and destination are the same 
-            //the operation is equivalent to a list rotation command.
-            response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "mylist", "mylist", "LEFT", "RIGHT" });
-            Assert.AreEqual("two", response);
-
-            response = await db.ExecuteForStringResultAsync("LMOVE", new string[] { "myotherlist", "myotherlist", "LEFT", "RIGHT" });
-            Assert.AreEqual("three", response);
-
-            responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "myotherlist", "0", "-1" });
-            expectedResponseArray = new string[] { "one", "three" };
-            Assert.AreEqual(expectedResponseArray, responseArray);
         }
 
         [Test]
@@ -687,28 +815,27 @@ namespace Garnet.test
             using var db = TestUtils.GetGarnetClient();
             db.Connect();
 
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "one" });
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "two" });
-            await db.ExecuteForStringResultAsync("RPUSH", new string[] { "mylist", "three" });
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "one"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "two"]);
+            await db.ExecuteForStringResultAsync("RPUSH", ["mylist", "three"]);
 
             var tokenSource = new CancellationTokenSource();
             var token = tokenSource.Token;
-            var response = await db.ExecuteForStringResultWithCancellationAsync("LMOVE", new string[] { "mylist", "myotherlist", "RIGHT", "LEFT" }, token);
+            var response = await db.ExecuteForStringResultWithCancellationAsync("LMOVE", ["mylist", "myotherlist", "RIGHT", "LEFT"], token);
             Assert.AreEqual("three", response);
 
             //check contents of mylist sorted set
-            var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", new string[] { "mylist", "0", "-1" });
+            var responseArray = await db.ExecuteForStringArrayResultAsync("LRANGE", ["mylist", "0", "-1"]);
             var expectedResponseArray = new string[] { "one", "two" };
             Assert.AreEqual(expectedResponseArray, responseArray);
 
             //Assert the cancellation is seen
             tokenSource.Cancel();
-            var t = db.ExecuteForStringResultWithCancellationAsync("LMOVE", new string[] { "myotherlist", "myotherlist", "LEFT", "RIGHT" }, tokenSource.Token);
+            var t = db.ExecuteForStringResultWithCancellationAsync("LMOVE", ["myotherlist", "myotherlist", "LEFT", "RIGHT"], tokenSource.Token);
             Assert.Throws<OperationCanceledException>(() => t.Wait(tokenSource.Token));
 
             tokenSource.Dispose();
         }
-
         #endregion
 
         #region LightClientTests
@@ -824,7 +951,67 @@ namespace Garnet.test
             using var lightClientRequest = TestUtils.CreateRequest();
             var response = lightClientRequest.SendCommand("HSET myhash onekey onepair");
             lightClientRequest.SendCommand("LINSERT myhash BEFORE one two");
-            var expectedResponse = "-ERR wrong key type used in LINSERT command.\r\n";
+            var expectedResponse = $"-{Encoding.ASCII.GetString(CmdStrings.RESP_ERR_WRONG_TYPE)}\r\n";
+            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CanDoLSETbasicLC()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+            _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
+            var response = lightClientRequest.SendCommand("LSET mylist 0 four");
+            var expectedResponse = "+OK\r\n";
+            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CanReturnErrorLSETWhenNosuchkey()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+            var response = lightClientRequest.SendCommand("LSET mylist 0 four");
+            var expectedResponse = "-ERR no such key\r\n";
+            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CanReturnErrorLSETWhenIndexNotInteger()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+            _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
+            var response = lightClientRequest.SendCommand("LSET mylist a four");
+            var expectedResponse = "-ERR value is not an integer or out of range.\r\n";
+            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CanReturnErrorLSETWhenIndexOutRange()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+            _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
+            var response = lightClientRequest.SendCommand("LSET mylist 10 four");
+            // 
+            var expectedResponse = "-ERR index out of range";
+            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+
+            response = lightClientRequest.SendCommand("LSET mylist -100 four");
+            expectedResponse = "-ERR index out of range";
+            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
+            Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CanReturnErrorLSETWhenArgumentsWrong()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+            _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
+            var response = lightClientRequest.SendCommand("LSET mylist a");
+            var expectedResponse = "-ERR wrong number of arguments for 'LSET'";
             var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
             Assert.AreEqual(expectedResponse, actualValue);
         }
@@ -916,7 +1103,7 @@ namespace Garnet.test
             int keyCount = 10;
             int ppCount = 100;
             //string[] keys = new string[keyCount];
-            HashSet<string> keys = new();
+            HashSet<string> keys = [];
             for (int i = 0; i < keyCount; i++)
                 while (!keys.Add(r.Next().ToString())) { }
 
@@ -981,6 +1168,37 @@ namespace Garnet.test
             Assert.AreEqual(expectedResponse, actualValue);
         }
 
+        [Test]
+        public void CanDoBasicLMove()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            var db = redis.GetDatabase(0);
+
+            var key1 = new RedisKey("mykey1");
+            var key1Values = new[] { new RedisValue("myval1"), new RedisValue("myval2"), new RedisValue("myval3") };
+
+            var key2 = new RedisKey("mykey2");
+            var key2Values = new[] { new RedisValue("myval4") };
+
+            var pushed = db.ListRightPush(key1, key1Values);
+            Assert.AreEqual(3, pushed);
+            pushed = db.ListRightPush(key2, key2Values);
+            Assert.AreEqual(1, pushed);
+
+            var result = db.ListMove(key1, key2, ListSide.Right, ListSide.Left);
+            Assert.AreEqual(key1Values[2], result);
+            result = db.ListMove(key1, key2, ListSide.Right, ListSide.Left);
+            Assert.AreEqual(key1Values[1], result);
+            result = db.ListMove(key1, key2, ListSide.Right, ListSide.Left);
+            Assert.AreEqual(key1Values[0], result);
+
+            var members = db.ListRange(key2);
+            Assert.AreEqual(key1Values.Union(key2Values).ToArray(), members);
+
+            var exists = db.KeyExists(key1);
+            Assert.IsFalse(exists);
+        }
+
 
         [Test]
         public void CanDoLPopMultipleValues()
@@ -1017,7 +1235,7 @@ namespace Garnet.test
             Assert.IsTrue(result == 0);
 
             var response = db.Execute("MEMORY", "USAGE", "mylist");
-            var actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            var actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             var expectedResponse = -1;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -1026,7 +1244,7 @@ namespace Garnet.test
             Assert.IsTrue(result == 10);
 
             response = db.Execute("MEMORY", "USAGE", "mylist");
-            actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             expectedResponse = 904;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -1035,7 +1253,7 @@ namespace Garnet.test
             Assert.IsTrue(result == 0);
 
             response = db.Execute("MEMORY", "USAGE", "myaux-list");
-            actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             expectedResponse = -1;
             Assert.AreEqual(expectedResponse, actualValue);
 
@@ -1044,7 +1262,7 @@ namespace Garnet.test
             Assert.IsTrue(result == 10);
 
             response = db.Execute("MEMORY", "USAGE", "myaux-list");
-            actualValue = ResultType.Integer == response.Type ? Int32.Parse(response.ToString()) : -1;
+            actualValue = ResultType.Integer == response.Resp2Type ? Int32.Parse(response.ToString()) : -1;
             expectedResponse = 912;
             Assert.AreEqual(expectedResponse, actualValue);
         }
@@ -1062,9 +1280,72 @@ namespace Garnet.test
             lightClientRequest.SendCommand("RPUSHX mylist value-one");
             var len = lightClientRequest.SendCommand("LLEN mylist");
 
-            var expectedResponse = ":0\r\n";
+            var expectedResponse = $"-{Encoding.ASCII.GetString(CmdStrings.RESP_ERR_WRONG_TYPE)}\r\n";
             var actualValue = Encoding.ASCII.GetString(len).Substring(0, expectedResponse.Length);
             Assert.AreEqual(expectedResponse, actualValue);
+        }
+
+        [Test]
+        public void CheckEmptyListKeyRemoved()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            var key = new RedisKey("user1:list");
+            var db = redis.GetDatabase(0);
+            var values = new[] { new RedisValue("Hello"), new RedisValue("World") };
+            var result = db.ListRightPush(key, values);
+            Assert.AreEqual(2, result);
+
+            var actualMembers = db.ListRightPop(key, 2);
+            Assert.AreEqual(values.Length, actualMembers.Length);
+
+            var keyExists = db.KeyExists(key);
+            Assert.IsFalse(keyExists);
+        }
+
+        [Test]
+        public void CheckListOperationsOnWrongTypeObjectSE()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            var db = redis.GetDatabase(0);
+
+            var keys = new[] { new RedisKey("user1:obj1"), new RedisKey("user1:obj2") };
+            var key1Values = new[] { new RedisValue("Hello"), new RedisValue("World") };
+            var key2Values = new[] { new RedisValue("Hola"), new RedisValue("Mundo") };
+            var values = new[] { key1Values, key2Values };
+
+            // Set up different type objects
+            RespTestsUtils.SetUpTestObjects(db, GarnetObjectType.Set, keys, values);
+
+            // LPOP
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListLeftPop(keys[0]));
+            // LPUSH
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListLeftPush(keys[0], values[0]));
+            // LPUSHX
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListLeftPush(keys[0], values[0], When.Exists));
+            // RPOP
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRightPop(keys[0]));
+            // RPUSH
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRightPush(keys[0], values[0]));
+            // RPUSHX
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRightPush(keys[0], values[0], When.Exists));
+            // LLEN
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListLength(keys[0]));
+            // LTRIM
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListTrim(keys[0], 2, 5));
+            // LRANGE
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRange(keys[0], 2, 5));
+            // LINDEX
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListGetByIndex(keys[0], 2));
+            // LINSERT
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListInsertAfter(keys[0], values[0][0], values[0][1]));
+            // LREM
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRemove(keys[0], values[0][0]));
+            // RPOPLPUSH
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListRightPopLeftPush(keys[0], keys[1]));
+            // LMOVE
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListMove(keys[0], keys[1], ListSide.Left, ListSide.Right));
+            // LSET
+            RespTestsUtils.CheckCommandOnWrongTypeObjectSE(() => db.ListSetByIndex(keys[0], 2, values[0][1]));
         }
     }
 }

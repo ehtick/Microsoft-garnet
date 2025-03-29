@@ -31,7 +31,7 @@ namespace Garnet.server
     {
         internal readonly string version;
         internal readonly string redisProtocolVersion;
-        readonly IGarnetServer server;
+        readonly IGarnetServer[] servers;
         internal readonly long startupTime;
 
         /// <summary>
@@ -59,7 +59,7 @@ namespace Garnet.server
         /// <summary>
         /// Get server
         /// </summary>
-        public GarnetServerTcp TcpServer => (GarnetServerTcp)server;
+        public IGarnetServer[] TcpServer => servers;
 
         /// <summary>
         /// Access control list governing all commands
@@ -130,7 +130,7 @@ namespace Garnet.server
         public StoreWrapper(
             string version,
             string redisProtocolVersion,
-            IGarnetServer server,
+            IGarnetServer[] servers,
             TsavoriteKV<SpanByte, SpanByte, MainStoreFunctions, MainStoreAllocator> store,
             TsavoriteKV<byte[], IGarnetObject, ObjectStoreFunctions, ObjectStoreAllocator> objectStore,
             CacheSizeTracker objectStoreSizeTracker,
@@ -145,7 +145,7 @@ namespace Garnet.server
         {
             this.version = version;
             this.redisProtocolVersion = redisProtocolVersion;
-            this.server = server;
+            this.servers = servers;
             this.startupTime = DateTimeOffset.UtcNow.Ticks;
             this.store = store;
             this.objectStore = objectStore;
@@ -154,7 +154,7 @@ namespace Garnet.server
             this.subscribeBroker = subscribeBroker;
             lastSaveTime = DateTimeOffset.FromUnixTimeSeconds(0);
             this.customCommandManager = customCommandManager;
-            this.monitor = serverOptions.MetricsSamplingFrequency > 0 ? new GarnetServerMonitor(this, serverOptions, server, loggerFactory?.CreateLogger("GarnetServerMonitor")) : null;
+            this.monitor = serverOptions.MetricsSamplingFrequency > 0 ? new GarnetServerMonitor(this, serverOptions, this.servers, loggerFactory?.CreateLogger("GarnetServerMonitor")) : null;
             this.objectStoreSizeTracker = objectStoreSizeTracker;
             this.loggerFactory = loggerFactory;
             this.logger = loggerFactory?.CreateLogger("StoreWrapper");
@@ -174,6 +174,11 @@ namespace Garnet.server
             if (serverOptions.EnableLua)
             {
                 this.storeScriptCache = [];
+
+                if (!LuaRunner.TryProbeSupport(out var errorMessage))
+                {
+                    logger?.LogCritical("Lua probe failed, Lua scripts will fail {errorMessage}", errorMessage);
+                }
 
                 if (serverOptions.LuaOptions.Timeout != Timeout.InfiniteTimeSpan)
                 {
@@ -220,10 +225,29 @@ namespace Garnet.server
         /// <returns></returns>
         public string GetIp()
         {
-            if (TcpServer.EndPoint is not IPEndPoint localEndpoint)
-                throw new NotImplementedException("Cluster mode for unix domain sockets has not been implemented");
+            IPEndPoint localEndPoint = null;
+            if (serverOptions.ClusterAnnounceEndpoint == null)
+            {
+                foreach (var server in servers)
+                {
+                    if (((GarnetServerTcp)server).EndPoint is IPEndPoint point)
+                    {
+                        localEndPoint = point;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                if (serverOptions.ClusterAnnounceEndpoint is IPEndPoint point)
+                    localEndPoint = point;
+            }
 
-            if (localEndpoint.Address.Equals(IPAddress.Any))
+            // Fail if we cannot advertise an endpoint for remote nodes to connect to
+            if (localEndPoint == null)
+                throw new GarnetException("Cluster mode requires definition of at least one TCP socket through either the --bind or --cluster-announce-ip options!");
+
+            if (localEndPoint.Address.Equals(IPAddress.Any))
             {
                 using (Socket socket = new(AddressFamily.InterNetwork, SocketType.Dgram, 0))
                 {
@@ -232,7 +256,7 @@ namespace Garnet.server
                     return endPoint.Address.ToString();
                 }
             }
-            else if (localEndpoint.Address.Equals(IPAddress.IPv6Any))
+            else if (localEndPoint.Address.Equals(IPAddress.IPv6Any))
             {
                 using (Socket socket = new(AddressFamily.InterNetworkV6, SocketType.Dgram, 0))
                 {
@@ -241,7 +265,7 @@ namespace Garnet.server
                     return endPoint.Address.ToString();
                 }
             }
-            return localEndpoint.Address.ToString();
+            return localEndPoint.Address.ToString();
         }
 
         internal FunctionsState CreateFunctionsState()
@@ -470,9 +494,9 @@ namespace Garnet.server
             }
         }
 
-        async Task HashCollectTask(int hashCollectFrequencySecs, CancellationToken token = default)
+        async Task ObjectCollectTask(int objectCollectFrequencySecs, CancellationToken token = default)
         {
-            Debug.Assert(hashCollectFrequencySecs > 0);
+            Debug.Assert(objectCollectFrequencySecs > 0);
             try
             {
                 var scratchBufferManager = new ScratchBufferManager();
@@ -480,7 +504,7 @@ namespace Garnet.server
 
                 if (objectStore is null)
                 {
-                    logger?.LogWarning("HashCollectFrequencySecs option is configured but Object store is disabled. Stopping the background hash collect task.");
+                    logger?.LogWarning("ExpiredObjectCollectionFrequencySecs option is configured but Object store is disabled. Stopping the background hash collect task.");
                     return;
                 }
 
@@ -489,8 +513,9 @@ namespace Garnet.server
                     if (token.IsCancellationRequested) return;
 
                     ExecuteHashCollect(scratchBufferManager, storageSession);
+                    ExecuteSortedSetCollect(scratchBufferManager, storageSession);
 
-                    await Task.Delay(TimeSpan.FromSeconds(hashCollectFrequencySecs), token);
+                    await Task.Delay(TimeSpan.FromSeconds(objectCollectFrequencySecs), token);
                 }
             }
             catch (TaskCanceledException) when (token.IsCancellationRequested)
@@ -499,7 +524,7 @@ namespace Garnet.server
             }
             catch (Exception ex)
             {
-                logger?.LogCritical(ex, "Unknown exception received for background hash collect task. Hash collect task won't be resumed.");
+                logger?.LogCritical(ex, "Unknown exception received for background hash collect task. Object collect task won't be resumed.");
             }
 
             static void ExecuteHashCollect(ScratchBufferManager scratchBufferManager, StorageSession storageSession)
@@ -509,6 +534,12 @@ namespace Garnet.server
 
                 ReadOnlySpan<ArgSlice> key = [ArgSlice.FromPinnedSpan("*"u8)];
                 storageSession.HashCollect(key, ref input, ref storageSession.objectStoreBasicContext);
+                scratchBufferManager.Reset();
+            }
+
+            static void ExecuteSortedSetCollect(ScratchBufferManager scratchBufferManager, StorageSession storageSession)
+            {
+                storageSession.SortedSetCollect(ref storageSession.objectStoreBasicContext);
                 scratchBufferManager.Reset();
             }
         }
@@ -668,9 +699,9 @@ namespace Garnet.server
                 Task.Run(async () => await CompactionTask(serverOptions.CompactionFrequencySecs, ctsCommit.Token));
             }
 
-            if (serverOptions.HashCollectFrequencySecs > 0)
+            if (serverOptions.ExpiredObjectCollectionFrequencySecs > 0)
             {
-                Task.Run(async () => await HashCollectTask(serverOptions.HashCollectFrequencySecs, ctsCommit.Token));
+                Task.Run(async () => await ObjectCollectTask(serverOptions.ExpiredObjectCollectionFrequencySecs, ctsCommit.Token));
             }
 
             if (serverOptions.AdjustedIndexMaxCacheLines > 0 || serverOptions.AdjustedObjectStoreIndexMaxCacheLines > 0)

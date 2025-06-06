@@ -183,6 +183,8 @@ namespace Garnet.server
             this.GarnetObjectSerializer = new GarnetObjectSerializer(this.customCommandManager);
             this.loggingFrequency = TimeSpan.FromSeconds(serverOptions.LoggingFrequency);
 
+            logger?.LogTrace("StoreWrapper logging frequency: {loggingFrequency} seconds.", this.loggingFrequency);
+
             if (serverOptions.SlowLogThreshold > 0)
                 this.slowLogContainer = new SlowLogContainer(serverOptions.SlowLogMaxEntries);
 
@@ -671,9 +673,6 @@ namespace Garnet.server
             Debug.Assert(objectCollectFrequencySecs > 0);
             try
             {
-                var scratchBufferManager = new ScratchBufferManager();
-                using var storageSession = new StorageSession(this, scratchBufferManager, null, null, logger);
-
                 if (serverOptions.DisableObjects)
                 {
                     logger?.LogWarning("ExpiredObjectCollectionFrequencySecs option is configured but Object store is disabled. Stopping the background hash collect task.");
@@ -684,8 +683,7 @@ namespace Garnet.server
                 {
                     if (token.IsCancellationRequested) return;
 
-                    ExecuteHashCollect(scratchBufferManager, storageSession);
-                    ExecuteSortedSetCollect(scratchBufferManager, storageSession);
+                    databaseManager.ExecuteObjectCollection();
 
                     await Task.Delay(TimeSpan.FromSeconds(objectCollectFrequencySecs), token);
                 }
@@ -697,22 +695,6 @@ namespace Garnet.server
             catch (Exception ex)
             {
                 logger?.LogCritical(ex, "Unknown exception received for background hash collect task. Object collect task won't be resumed.");
-            }
-
-            static void ExecuteHashCollect(ScratchBufferManager scratchBufferManager, StorageSession storageSession)
-            {
-                var header = new RespInputHeader(GarnetObjectType.Hash) { HashOp = HashOperation.HCOLLECT };
-                var input = new ObjectInput(header);
-
-                ReadOnlySpan<ArgSlice> key = [ArgSlice.FromPinnedSpan("*"u8)];
-                storageSession.HashCollect(key, ref input, ref storageSession.objectStoreBasicContext);
-                scratchBufferManager.Reset();
-            }
-
-            static void ExecuteSortedSetCollect(ScratchBufferManager scratchBufferManager, StorageSession storageSession)
-            {
-                storageSession.SortedSetCollect(ref storageSession.objectStoreBasicContext);
-                scratchBufferManager.Reset();
             }
         }
 

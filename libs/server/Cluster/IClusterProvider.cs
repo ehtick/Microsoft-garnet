@@ -29,6 +29,12 @@ namespace Garnet.server
         /// </summary>
         IClusterSession CreateClusterSession(TransactionManager txnManager, IGarnetAuthenticator authenticator, UserHandle userHandle, GarnetSessionMetrics garnetSessionMetrics, BasicGarnetApi basicGarnetApi, INetworkSender networkSender, ILogger logger = null);
 
+
+        /// <summary>
+        /// Are we allowed to incur AOF data loss: { using null AOF device } OR { main memory replication AND no on-demand checkpoints }
+        /// </summary>
+        bool AllowDataLoss { get; }
+
         /// <summary>
         /// Flush config
         /// </summary>
@@ -120,7 +126,7 @@ namespace Garnet.server
         /// <summary>
         /// Safe truncate AOF
         /// </summary>
-        void SafeTruncateAOF(StoreType storeType, bool full, long CheckpointCoveredAofAddress, Guid storeCheckpointToken, Guid objectStoreCheckpointToken);
+        void SafeTruncateAOF(bool full, long CheckpointCoveredAofAddress, Guid storeCheckpointToken, Guid objectStoreCheckpointToken);
 
         /// <summary>
         /// Safe truncate AOF until address
@@ -137,5 +143,10 @@ namespace Garnet.server
         /// Update cluster auth (atomically)
         /// </summary>
         void UpdateClusterAuth(string clusterUsername, string clusterPassword);
+
+        /// <summary>
+        /// Get checkpoint info
+        /// </summary>
+        MetricsItem[] GetCheckpointInfo();
     }
 }

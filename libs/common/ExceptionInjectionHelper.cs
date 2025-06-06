@@ -4,6 +4,7 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Garnet.common
 {
@@ -17,6 +18,13 @@ namespace Garnet.common
         /// </summary>
         static readonly bool[] ExceptionInjectionTypes =
             Enum.GetValues<ExceptionInjectionType>().Select(_ => false).ToArray();
+
+        /// <summary>
+        /// Check if exception is enabled
+        /// </summary>
+        /// <param name="exceptionType"></param>
+        /// <returns></returns>
+        public static bool IsEnabled(ExceptionInjectionType exceptionType) => ExceptionInjectionTypes[(int)exceptionType];
 
         /// <summary>
         /// Enable exception scenario (NOTE: enable at beginning of test to trigger the exception at runtime)
@@ -42,6 +50,42 @@ namespace Garnet.common
         {
             if (ExceptionInjectionTypes[(int)exceptionType])
                 throw new GarnetException($"Exception injection triggered {exceptionType}");
+        }
+
+        /// <summary>
+        /// Trigger condition and reset it
+        /// </summary>
+        /// <param name="exceptionType"></param>
+        /// <returns></returns>
+        public static bool TriggerCondition(ExceptionInjectionType exceptionType)
+        {
+#if DEBUG
+            if (ExceptionInjectionTypes[(int)exceptionType])
+            {
+                ExceptionInjectionTypes[(int)exceptionType] = false;
+                return true;
+            }
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        /// <summary>
+        /// Wait on set condition
+        /// </summary>
+        /// <param name="exceptionType"></param>
+        /// <returns></returns>
+        public static async Task WaitOnCondition(ExceptionInjectionType exceptionType)
+        {
+            var flag = ExceptionInjectionTypes[(int)exceptionType];
+            if (flag)
+            {
+                // Reset and wait to signaled to go forward
+                ExceptionInjectionTypes[(int)exceptionType] = false;
+                while (!ExceptionInjectionTypes[(int)exceptionType])
+                    await Task.Yield();
+            }
         }
     }
 }
